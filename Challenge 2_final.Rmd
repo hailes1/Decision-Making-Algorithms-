@@ -1,0 +1,323 @@
+---
+title: "DH_Challenge_2"
+author: "Dagmawe Haileslassie"
+date: "05/09/2022"
+output:
+  pdf_document: default
+  html_document: default
+editor_options:
+  chunk_output_type: console
+---
+
+```{r}
+#knitr::opts_chunk$set(echo=FALSE, warning=FALSE, message=FALSE, fig.show="hide", results=FALSE)
+knitr::opts_chunk$set(warning=FALSE, message=FALSE)
+library(tidyverse)
+library(tidymodels)
+tidymodels_prefer()
+library(glmnet)
+library(vip)
+library(mlbench)
+
+library(rpart)
+
+library(rpart.plot)
+
+library(keras)
+library(dplyr)
+library(magrittr)
+library(neuralnet)
+```
+# What is my Data and What do I plan to do?  
+
+  Early diagnosis of cancer is critical for its successful treatment. Ultimatley, there is a high demand for accurate and cheap diagnostic methods. In this project I wanted to explore the applicability of
+  1. Decision tree machine learning techniques
+      - A random forest model
+      - Normal Decision Tree
+  2. Neural networks and
+  3. Basic Logistic regression
+for breast cancer diagnosis using digitized images of tissue samples. I obtained the data from UC Irvine Machine Learning Repository (“Breast Cancer Wisconsin data set” created by William H. Wolberg, W. Nick Street, and Olvi L. Mangasarian). 
+ 
+# Why I picked the Data. 
+The most accurate traditional method for a diagnosis when it comes to breast cancer is a rather invasive technique, called breast biopsy, where a small piece of breast tissue is surgically removed, and then the tissue sample has to be examined by a specialist. However, a much less invasive technique can be used, where the samples can be obtained by a minimally invasive fine needle aspirate method. 
+
+As seen in our data the sample obtained by this method can be easily digitized and used for computationally based diagnosis. This can ultimatley increase processing speed and on a big scale can make the process significantly cheaper.
+
+# Deep dive into Cancer.tbl
+In the code chunk below we import the dataset data.csv and select out ID and X which are colomns I found unuseful when building any of the aforementioned models. When taking a close look we can see that all the colomns (variables) are numerical except for our classifiable data that shows wheather or not the diagnosis is benign or malignant. 
+```{r}
+Cancer <- read.csv("~/Mscs 341 S22/Submit Section A/Project_2/Data/data.csv", header = TRUE)
+Cancer.tbl <- Cancer%>%
+  select(-id, -X)
+str(Cancer.tbl)
+dim(Cancer.tbl)
+```
+
+And as usual we will set-up or training/testing dataset:
+```{r}
+cancer.split <- initial_split(Cancer.tbl, prop=0.8)
+cancer.train.tbl <- training(cancer.split)
+
+cancer.test.tbl <- testing(cancer.split)
+```
+
+# Lasso Classification  
+The first thing we're going to do is build a Lasso classification model that will allow us to predict the diagnosis based on the different variables. Furthermore I would like to identify a small number of the important features (variables) to use when building the tree model and Neural Net later in this project. The reason why I chose a lasso regression is because of LASSO's ability to identify a small subset of variables.
+
+```{r echo=TRUE, results=TRUE}
+cancer.model <- 
+  logistic_reg(mixture = 0, penalty=tune()) %>% 
+  set_mode("classification") %>% 
+  set_engine("glmnet")
+```
+
+```{r}
+cancer.recipe <- 
+  recipe(formula = diagnosis~ ., data = cancer.train.tbl) %>% 
+  step_normalize(all_predictors())
+
+cancer.wf <- workflow() %>% 
+  add_recipe(cancer.recipe) %>% 
+  add_model(cancer.model)
+```
+
+Next we are going to create a grid between -2 and 0 on the log-scale with 20 values. I will then use tune_grid() and plot the effect of the penalty in the classification accuracy of the LASSO model.
+
+```{r}
+set.seed(1234)
+cancer.folds<- vfold_cv(cancer.train.tbl, v = 10)
+
+penalty.grid <-
+  grid_regular(penalty(range = c(-2, 0)), levels = 20)
+
+tune.res.lasso <- tune_grid(
+  cancer.wf,
+  resamples = cancer.folds, 
+  grid = penalty.grid,
+  metrics = metric_set(accuracy, roc_auc, sensitivity, specificity))
+autoplot(tune.res.lasso)
+```
+
+When looking at the autoplot we can see that the accuracy of the model decreases after penality = 0.10.  
+
+```{r}
+show_best(tune.res.lasso, metric = "accuracy")
+(best.penalty <- select_by_one_std_err(tune.res.lasso, 
+                                       metric = "accuracy", 
+                                       desc(penalty)))
+cancer.final.wf <- finalize_workflow(cancer.wf, best.penalty)
+cancer.final.fit <- fit(cancer.final.wf, data = cancer.train.tbl)
+
+augment(cancer.final.fit, new_data = cancer.test.tbl) %>%
+  conf_mat(truth = diagnosis, estimate = .pred_class)
+
+augment(cancer.final.fit, new_data = cancer.test.tbl) %>%
+  accuracy(truth = diagnosis, estimate = .pred_class)
+augment(cancer.final.fit, new_data = cancer.test.tbl) %>%
+  sensitivity(truth = diagnosis, estimate = .pred_class)
+augment(cancer.final.fit, new_data = cancer.test.tbl) %>%
+  specificity(truth = diagnosis, estimate = .pred_class)
+```
+# Lasso Classification Result Analysis 
+When looking at the confusion matrix for patients with benign cancer our model predicted a 100% of the test dataset, in our malignant cancer cell there were 3 misdiagnosed patients in our model.
+
+The accuracy of this model is about 97.4%
+
+Let's now look at a table of estimates. 
+```{r}
+extract_fit_parsnip(cancer.final.fit)%>%
+  vip()
+```
+From the table of estimates and terms we can see that the variables that have the significant effects on the model area are radius_mean, texture_mean, Perimeter_mean, area_mean and Smoothness_mean. 
+
+```{r}
+# library(gridExtra)
+gg1 <- ggplot (cancer.test.tbl, aes(x=radius_mean, y=texture_mean, color=diagnosis, shape=diagnosis))+
+    geom_point()
+gg2 <- ggplot (cancer.test.tbl, aes(x=perimeter_mean, y=area_mean, color=diagnosis, shape=diagnosis))+
+    geom_point()
+
+grid.arrange(gg1,gg2,ncol=2)
+```
+
+
+# Decisions trees
+
+Decisions trees introduce a completely new idea for making predictions. The fundamental  idea, as the name implies, is to use a **tree** as the means of making a decisions. The tree is built on a sequence of decisions based on the predictor variables. 
+```{r}
+  cancer.tree.model <-
+    decision_tree(tree_depth = tune(), cost_complexity = tune()) %>%
+    set_mode("classification") %>%
+    set_engine("rpart")
+  
+  cancer.tree.recipe <- recipe(diagnosis ~ .,
+                   data=cancer.train.tbl)
+  
+  cancer.tree.wflow <- workflow() %>%
+      add_recipe(cancer.tree.recipe) %>%
+      add_model(cancer.tree.model) 
+  
+  # Create the cross-validation dataset
+  cancer.tree.folds <- vfold_cv(cancer.train.tbl, v = 10)
+  
+  #Set up the grid
+  cancer.tree.grid <- 
+    grid_regular(cost_complexity(), tree_depth(), levels = 4)
+
+  
+  tune.res.tree <-
+    tune_grid(
+      cancer.tree.wflow,
+      resamples = cancer.folds,
+      grid = cancer.tree.grid,
+      metrics = metric_set(accuracy, roc_auc, sensitivity, specificity))
+  tune.res.tree
+  autoplot(tune.res.tree)
+  
+  
+  
+  show_best(tune.res.tree, metric = "accuracy")
+  (best.penalty <- select_by_one_std_err(tune.res.tree, 
+                                         metric = "accuracy", 
+                                         -cost_complexity))
+  
+  cancer.final.wf <- finalize_workflow(cancer.tree.wflow,
+                                       best.penalty)
+  
+  cancer.final.fit <- fit(cancer.final.wf,  cancer.train.tbl)
+  
+  cancer.final.rs <- last_fit(cancer.final.wf, 
+                           cancer.split)
+  
+  collect_metrics(cancer.final.rs)
+  
+  augment(cancer.final.fit, new_data = cancer.test.tbl) %>%
+    conf_mat(truth = diagnosis, estimate = .pred_class)
+  
+  augment(cancer.final.fit, new_data = cancer.test.tbl)%>%
+    accuracy(truth = diagnosis, estimate = .pred_class)
+  augment(cancer.final.fit, new_data = cancer.test.tbl) %>%
+    sensitivity(truth = diagnosis, estimate = .pred_class)
+  augment(cancer.final.fit, new_data = cancer.test.tbl) %>%
+    specificity(truth = diagnosis, estimate = .pred_class)
+
+```
+
+Let's see the variable importance of our decision tree
+```{r}
+imp.tbl.dt <- cancer.final.fit %>%
+  extract_fit_engine() %>%
+  vip::vi()
+imp.tbl.dt
+```
+
+Let's visualize our model on our training dataset using `parttree` and let's look at how the final model looks as a tree.
+```{r}
+cancer.final.fit %>%
+  extract_fit_engine() %>%
+  rpart.plot(roundint=FALSE)
+```
+
+# Random Forest Model 
+
+```{r echo=TRUE}
+ranger_recipe <- 
+  recipe(formula = diagnosis ~ ., data = cancer.train.tbl) 
+
+ranger_spec <- 
+  rand_forest(trees = 100, mtry=28) %>% 
+  set_mode("classification") %>% 
+  set_engine("ranger",importance = "impurity")  
+
+ranger_workflow <- 
+  workflow() %>% 
+  add_recipe(ranger_recipe) %>% 
+  add_model(ranger_spec) 
+
+cancer.forest.model <- fit(ranger_workflow, cancer.train.tbl)
+```
+
+```{r echo=TRUE, results=TRUE}
+augment(cancer.forest.model, cancer.test.tbl) %>%
+  accuracy(truth=diagnosis, estimate= .pred_class)
+
+augment(cancer.forest.model, cancer.test.tbl) %>%
+  conf_mat(truth=diagnosis, estimate= .pred_class)
+
+imp.tbl.dt.forest <- cancer.forest.model %>%
+  extract_fit_engine() %>%
+  vip::vi()
+imp.tbl.dt.forest
+```
+
+# Neural Net
+
+So before we get started with the Neural Network, I wanted to understand what it is. A neural network is a series of algorithms that endeavors to recognize underlying relationships in a set of data through a process that mimics the way the human brain operates. 
+
+
+Let's first look at the distribution of benign and malignant in the cancer.tbl dataset to see if we need to do any preprocessing. I am going to draw a boxplot to see if the dataset needs to be scaled and if there are any outliers. To that end, let me create a function to draw boxplots. 
+
+```{r}
+Cancer.tbl.nn <- Cancer.tbl %>%  
+  select(concave.points_worst, perimeter_worst, area_worst, concave.points_mean, diagnosis)
+draw_boxplot <- function(){ 
+  Cancer.tbl.nn %>%
+    pivot_longer(1:4, names_to="attributes")%>%
+    ggplot(aes(attributes, value, fill=attributes)) + 
+      geom_boxplot()
+}
+draw_boxplot()
+```
+We can observe that the columns have different scales and the ‘Sepal.Width’ column has outliers. First, let us get rid of the outliers. I am going to use the squish method to remove the outliers. Here, note that I will not be removing the outlying data. Instead, I will only be setting the outlying rows of data to the maximum or minimum value. 
+
+```{r}
+Cancer.tbl.nn <- Cancer.tbl.nn%>%  
+  mutate(across(1:4, scale))
+draw_boxplot()
+```
+Let's divide up our new dataset into testing and training datasets. 
+```{r}
+cancer.split.nn <- initial_split(Cancer.tbl.nn, prop=0.8)
+cancer.train.tbl.nn <- training(cancer.split.nn)
+cancer.test.tbl.nn <- testing(cancer.split.nn)
+```
+
+To create a neural network, I am going to use the neuralnet package. I will be using the default settings and will be using two hidden layers with two neurons on each. By default, neuralnet uses the logistic function as the activation function. 
+
+```{r}
+nn=neuralnet(diagnosis ~.,  
+             data=cancer.train.tbl.nn, hidden=c(2,2), linear.output = FALSE)
+``` 
+
+```{r}
+plot(nn, rep = 'best')
+```
+
+
+```{r}
+predict <- function(data){ 
+  prediction <- data.frame(neuralnet::compute(nn,  
+                                              data.frame(data[,-5]))$net.result) 
+  labels <- c("B", "M") 
+  prediction_label <- data.frame(max.col(prediction)) %>%  
+    mutate(prediction=labels[max.col.prediction.]) %>%  
+    select(2) %>%  
+    unlist() 
+  table(data$diagnosis, prediction_label) 
+}
+```
+
+```{r}
+predict(cancer.test.tbl.nn)
+```
+
+
+# Summary of the accuracy of the models
+Let's summarize what we did so far and finally analyse the accuracy of these models. First we built a lasso classification model, the accuracy of this model was a 98% the most important variables when running this model are radius_mean, texture_mean, Perimeter_mean, area_mean and Smoothness_mean. Next we moved on to a decision tree and the accuracy was 93.9% the most important variables when running this model were concave.points_worst, perimeter_worst, area_worst, concave.points_mean. 
+Lastly we tried to do a neural net with the above 4 important variables we got an accuracy of (96%). This may have been caused by the number of variables being significantly smaller but we can see an improve in the accuracy than the decision tree. 
+
+
+
+
+
+

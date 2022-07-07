@@ -1,0 +1,455 @@
+---
+title: "Challenge 1: Comparing 3 and 4"
+author: "Dagmawe Haileslassie, Kylie Landa, Erica Meyers & Seth Mutenda"
+date: "3/16/2022"
+output: pdf_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(warning=FALSE, message=FALSE)
+library(tidyverse)
+library(caret)
+library(dslabs)
+library(rsample)
+```
+
+# Dataset Creation 
+Your dataset should have in total 1000 randomly selected digits (feel free to use a set.seed command so that your results are reproducible). Your training dataset should have 800 observations and your testing should have 200 observations.
+
+## Our Approach 
+We have seen in class that the MNIST database (Modified National Institute of Standards and Technology database) is a large collection of handwritten digits used by the Machine learning community. The `dslabs` packages has a handy function called `read_mnist` that allows to load this dataset as follows:
+
+```{r}
+mnist <- read_mnist("~/Mscs 341 S22/Class/Data")
+str(mnist)
+```
+
+We can see that the Mnist has a training and testing set. The training dataset has 60,000 elements represented as a matrix of $6000 \times 784$ (every image is a vector of 784, representing a $28 \times 28$ image). It also has the labels corresponding to each of the images represented as integers. Finally the testing dataset has 10,000 elements represented in a similar way. 
+
+```{r}
+plotImage <- function(dat,size=28){
+  imag <- matrix(dat,nrow=size)[,28:1]
+  image(imag,col=grey.colors(256), xlab = "", ylab="") 
+}
+```
+
+Let's see an example of a 3 and 4 in our training dataset 
+
+```{r}
+plotImage(mnist$train$images[8,])
+mnist$train$labels[8]
+plotImage(mnist$train$images[10,])
+mnist$train$labels[10]
+```
+
+So the problem we are facing now is how do we sift through all of the labels to find numbers that belong to a certain set, the specific set we are looking for is numbers 3 and 4. After finding out how to access these sets we can then look into what exactly makes them different/easily classifiable.
+
+```{r}
+#indices for 3
+index_of3 <- c()
+for (x in 1:length(mnist$train$labels)){
+  if(mnist$train$labels[x] == '3'){ 
+    index_of3 <- append(index_of3, x)
+  } 
+}
+index_of3 <- index_of3[1:500]
+
+#indices for 4
+index_of4 <- c()
+for (x in 1:length(mnist$train$labels)){
+  if(mnist$train$labels[x] == '4'){
+    index_of4 <- append(index_of4, x)
+  } 
+}
+index_of4 <- index_of4[1:500]
+
+index_of5 <- c()
+for (x in 1:length(mnist$train$labels)){
+  if(mnist$train$labels[x] == '5'){
+    index_of5 <- append(index_of5, x)
+  } 
+}
+index_of5 <- index_of5[1:500]
+
+indeces <- tibble(index_of3, index_of4, index_of5)
+indeces
+```
+
+
+```{r}
+#accessing matrix
+accessMatrix <- function(dat,size=28){
+  newmatrix <- matrix(dat,nrow=size)[,28:1]
+}
+
+#check for number 3
+newmatrix3 <- accessMatrix(mnist$train$images[8,])
+newmatrix3
+
+#check for number 4
+newmatrix4 <- accessMatrix(mnist$train$images[3,])
+newmatrix4
+
+#check for number 5
+newmatrix5 <- accessMatrix(mnist$train$images[1,])
+newmatrix5
+```
+
+# Feature Definition
+You are allowed to use only 2 features. Notice that you need to calculate those features directly from dataset. Make sure to describe what those features represent and why you chose them. Are those features capturing any intuition that you have about distinguishing those two digits?
+
+For our focus features, we will look at symmetry over the top and bottom halves of the image, and the level of linearity that a 4 has vs a 3.
+
+## Symmetry
+
+Starting with symmetry, we can see that a 3 is far more symmetrical between top and bottom halves than a 4 is.  Thus, we will be looking at the number of pixels in the top half of the image divided by the number of pixels in the bottom half of the image, and the closer that value is to 1, the more symmetrical the image is, and the more likely the image is a 3.
+
+```{r}
+#Calculating the symmetry of the upper quadrant 
+
+symmetry1 <- function(dat, newmatrix){
+  sum <- 0
+  for(x in 1:28){
+    for(y in 1:14){
+      sum = sum + newmatrix[x,y]
+    }
+  }
+  sum
+}
+#Upper Quadrant symmetry for numbers 3(new matrix3) and number 4(newmatrix4)
+symmetry1(mnist$train$images[8,], newmatrix3)
+symmetry1(mnist$train$images[3,], newmatrix4)
+
+
+#Calculating the symmetry of the lower quadrant 
+symmetry2 <- function(dat, newmatrix){
+  sum <- 0
+  for(x in 1:28){
+    for(y in 15:28){
+      sum = sum + newmatrix[x,y]
+    }
+  }
+  sum
+}
+#Lower Quadrant symmetry for numbers 3(new matrix3) and number 4(newmatrix4)
+symmetry2(mnist$train$images[8,], newmatrix3)
+symmetry2(mnist$train$images[10,], newmatrix4)
+```
+
+Now that we have seen that it works for individual values, indices, and labels that represent 3 and 4, let's move on to see if it works generally. Here is the symmetry function we came up with:
+
+```{r}
+ratio_calc <- function(index_of_minst){
+  ratio <- c()
+  y <- c()
+  for (x in 1:500){
+    matrix_group <- accessMatrix(mnist$train$images[index_of_minst[x],])
+    upper_quadrant <- symmetry1(mnist$train$images[index_of_minst[x],], matrix_group)
+    lower_quadrant <- symmetry2(mnist$train$images[index_of_minst[x],], matrix_group)
+    ratio[x] = upper_quadrant/lower_quadrant
+    y = 3
+  }
+  ratio
+}
+
+final_3 <- tibble(indeces = indeces$index_of3, ratio = ratio_calc(index_of3))
+final_3 <- final_3%>%
+  mutate(y = 3)
+final_3
+
+final_4 <- tibble(indeces = indeces$index_of4, ratio = ratio_calc(index_of4))
+final_4 <- final_4%>%
+  mutate(y = 4)
+final_4
+
+final_5 <- tibble(indeces = indeces$index_of5, ratio = ratio_calc(index_of5))
+final_5 <- final_5%>%
+  mutate(y = 5)
+final_5
+
+symmetry_final <- final_3%>%
+  full_join(final_4)
+symmetry_final
+```
+
+## Linearity
+
+Next we will look at Linearity, because a 4 typically has a clear vertical line. A 3 should have less obvious of any vertical line, which should help with identifying, while looking at a different feature than before.
+
+```{r}
+Linear <- function(dat, newmatrix){
+  min <- c()
+  for(x in 1:28){
+    sum <- 0
+    for(y in 1:28){
+      if(newmatrix[x,y] == 0){
+        sum = sum + 1
+      }
+    }
+    min[x] = sum
+  }
+  min(min)
+}
+Linear(mnist$train$images[8,], newmatrix3)
+
+linear_final <- function(index_of_minst){
+  minimum_values <- c()
+  y <- c()
+  for (x in 1:500){
+    matrix_group <- accessMatrix(mnist$train$images[index_of_minst[x],])
+    minimum_values[x] = Linear(mnist$train$images[index_of_minst[x,]], matrix_group)
+  }
+  print(minimum_values)
+}
+
+final_3_linear <- tibble(indeces = indeces$index_of3, linearity = linear_final(index_of3))
+final_3_linear <- final_3_linear%>%
+  mutate(y = 3)
+final_3_linear
+
+final_4_linear <- tibble(indeces = indeces$index_of4, linearity = linear_final(index_of4))
+final_4_linear <- final_4_linear%>%
+  mutate(y = 4)
+final_4_linear
+
+linear_final_tbl <- final_3_linear%>%
+  full_join(final_4_linear)
+linear_final_tbl
+```
+
+Will all this, now we put all the data into a combined table.
+
+```{r}
+mnist_34 <- linear_final_tbl %>%
+  bind_cols(symmetry_final)
+mnist_34
+
+final.split <- initial_split(mnist_34, prop=0.8)
+train.mnist_34 <- training(final.split)%>%
+  mutate(y = as.factor(y...6))%>%
+  mutate(x_1 = ratio)%>%
+  mutate(x_2 = linearity)%>%
+  select(x_1, x_2, y)
+train.mnist_34
+test.mnist_34 <- testing(final.split)%>%
+  mutate(y = as.factor(y...6))%>%
+  mutate(x_1 = ratio)%>%
+  mutate(x_2 = linearity)%>%
+  select(x_1, x_2, y)
+```
+
+Here are some graphs that can help us better understand our distribution.
+
+```{r}
+ggplot(symmetry_final, aes(x=ratio, y = factor(y)))+
+  geom_boxplot()
+```
+
+This box plot shows us how accurate the symmetry feature was, looking at the ratio of pixels from the top half to the bottom half.  We can see that there's very little overlap between the numbers, and when identifying, a 3 will stick around a 1:1 ratio, showing symmetry, while the ratio for a 4 is either decently above or below 1.0 - typically above, as there should be more pixels in the top half than the bottom half, but sometimes below.
+
+```{r}
+ggplot(linear_final_tbl, aes(x=linearity, y = factor(y)))+
+  geom_boxplot()
+```
+
+Now, when looking at the linearity box plot, we can see that this is far less accurate of a feature for us to be looking at, as there's a lot of overlap between the numbers. The values along the x axis show us the minimum number of zeros in a row in the image, trying to find the most linear line. The 4s actually shows more linearity than a 3 generally, at least in these images, we believe because a lot of the images in this dataset have the vertical line in a 4 somewhat diagonal.
+
+```{r}
+ggplot(mnist_34, aes(x=ratio, y = linearity, color = factor(y...6)))+
+  geom_point()
+```
+
+This scatter plot is going more in depth with both features, seeing how well symmetry (on the x axis) and linearity (on the y axis) work together to identify the numbers. There's a significant amount of overlap, but the we can see that the symmetry feature really helps identify a 3 from a 4, and the linearity helps somewhat, but mainly with outliars.
+
+# Model Creation, Optimization and Selection
+a) Create at least two different models for this classification and make sure to optimize the parameters those models have.
+
+## KNN Model 
+```{r}
+library(tidymodels)
+library(kknn)
+## devtools::install_github("KlausVigo/kknn")
+tidymodels_prefer()
+
+build_knn <- function (train.table, kVal) {
+  knn.model <- nearest_neighbor(neighbors = kVal) %>%
+    set_engine("kknn") %>%
+    set_mode("classification")
+
+  recipe <- recipe(y ~ x_1 + x_2, data=train.table)
+
+  knn.wflow <- workflow() %>%
+    add_recipe(recipe) %>%
+    add_model(knn.model) 
+
+  knn.fit <- fit(knn.wflow, train.table)
+}
+
+knn.model <- build_knn(train.mnist_34, 5)
+```
+
+## Cross Validation
+```{r}
+knn.model.cv <- nearest_neighbor(neighbors = tune()) %>%
+    set_engine("kknn") %>%
+    set_mode("classification")
+
+recipe <- recipe(y ~ x_1 + x_2, data=train.mnist_34)
+
+knn.wf <- workflow() %>%
+    add_recipe(recipe) %>%
+    add_model(knn.model.cv) 
+knn.wf
+```
+
+b) Calculate the missclassification rates for both models and select the model with the lowest error rate.
+
+```{r}
+knn.final.fit <- predict(knn.model, test.mnist_34, type="prob")
+
+pred34.test.tbl <- knn.model %>%
+  augment(new_data = test.mnist_34)
+pred34.test.tbl
+
+accuracy(pred34.test.tbl, y, .pred_class)
+conf_mat(pred34.test.tbl, truth = y, estimate = .pred_class)
+```
+
+Looking at our results from the KNN Model, the missclassification rate is 0.75, and in the confusion matrix we can see the results played out in more detail. These were really cool results to get, as it shows that this model is pretty accurate for identifying the numbers.  Now we'll look at the rates with the cross validation, and see if it helps at all.
+
+```{r}
+set.seed(12345)
+digits.folds <- vfold_cv(train.mnist_34, v = 10)
+
+neighbours <- seq(1, 51, by = 5)
+neighbors.tbl <- tibble(neighbours)
+neighbors2.tbl <- grid_regular(neighbors(range = c(1, 51)), levels = 11)
+
+tune.results <- tune_grid(
+  object = knn.wf, 
+  resamples = digits.folds, 
+  grid = neighbors2.tbl
+)
+autoplot(tune.results)
+
+show_best(tune.results, metric = "accuracy")
+best.neighbor <- select_best(tune.results, metric = "accuracy")
+knn.final.wf <- finalize_workflow(knn.wf, best.neighbor)
+knn.final.fit_cv <- fit(knn.final.wf, train.mnist_34)
+
+predict(knn.final.fit_cv, test.mnist_34, type="prob")
+
+pred34_cv.test.tbl <- knn.final.fit_cv %>%
+  augment(new_data = test.mnist_34)
+pred34_cv.test.tbl
+
+accuracy(pred34_cv.test.tbl, y, .pred_class)
+conf_mat(pred34_cv.test.tbl, truth = y, estimate = .pred_class)
+```
+
+Now with Cross Validation, the missclassification rate is 0.785, and the confusion matrix. This shows us that the Cross Validation model is more accurate than the KNN Model! It is only slightly better, but definitely worth it - this is our superior model, and now we'll plot these probabilities.
+
+# Visualization
+Plot the probabilities across a grid and the decision boundary for your selected model.
+
+We selected the Cross Validation model, as it had better results, and here is our plot.
+```{r}
+plot_boundary <- function(fit, test.tbl, delta){
+  grid.tbl <- expand_grid(x_1=seq(0,2, by=delta), 
+                          x_2=seq(8,20, by=delta)) 
+
+  augment(fit, grid.tbl)%>%
+    ggplot() +
+      geom_raster(aes(x_1, x_2, fill = .pred_class)) +
+      geom_point(data=test.tbl, aes(x=x_1, y=x_2, color=y, shape=y))+
+      scale_color_manual(values=c("red","blue"))
+}
+plot_boundary(knn.model, test.mnist_34, 0.01)
+```
+
+# Changing things up
+a) Create a new dataset that includes your two chosen digits and the digit 5. Create training and testing datasets that include 5 and your two given digits.
+
+b) Calculate the same 2 features for this new testing and training dataset.
+
+```{r}
+final_5_linear <- tibble(indeces = indeces$index_of5, linearity = linear_final(index_of5))
+final_5_linear <- final_5_linear%>%
+  mutate(y = 5)
+final_5_linear
+
+linear_final_tbl_3_4_5 <- linear_final_tbl%>%
+  full_join(final_5_linear)
+linear_final_tbl_3_4_5
+
+symmetry_final_3_4_5 <- symmetry_final%>%
+  full_join(final_5)
+symmetry_final_3_4_5
+
+mnist_345 <- linear_final_tbl_3_4_5%>%
+  bind_cols(symmetry_final_3_4_5)
+mnist_345
+
+final.split_345 <- initial_split(mnist_345, prop=0.8)
+train.mnist_345 <- training(final.split_345)%>%
+  mutate(y = as.factor(y...6))%>%
+  mutate(x_1 = ratio)%>%
+  mutate(x_2 = linearity)%>%
+  select(x_1, x_2, y)
+train.mnist_345
+test.mnist_345 <- testing(final.split_345)%>%
+  mutate(y = as.factor(y...6))%>%
+  mutate(x_1 = ratio)%>%
+  mutate(x_2 = linearity)%>%
+  select(x_1, x_2, y)
+```
+
+c) Calculate the missclassification rate on this new dataset. Create also the confusion matrix and comment on what digits seem to get confused more and why.
+
+```{r}
+build_knn_345 <- function (train.table, kVal) {
+  knn.model <- nearest_neighbor(neighbors = kVal) %>%
+    set_engine("kknn") %>%
+    set_mode("classification")
+
+  recipe <- recipe(y ~ x_1 + x_2, data=train.table)
+
+  knn.wflow <- workflow() %>%
+    add_recipe(recipe) %>%
+    add_model(knn.model) 
+
+  knn.fit <- fit(knn.wflow, train.table)
+}
+
+knn.model_345 <- build_knn(train.mnist_345, 5)
+
+knn.final.fit_345 <- predict(knn.model_345, test.mnist_345, type="prob")
+
+pred345.test.tbl <- knn.model_345 %>%
+  augment(new_data = test.mnist_345)
+pred345.test.tbl
+
+accuracy(pred345.test.tbl, y, .pred_class)
+conf_mat(pred345.test.tbl, truth = y, estimate = .pred_class)
+```
+
+Once we add in the 5, our accuracy with the KNN Model drops significantly with a missclassification rate of 0.517.As we can see from the confusion matrix, the 3s and 5s are most often confused, which makes sense because with the way we calculated symmetry, a 5 would also be seen as quite symmetrical. 4s were the least confused, but still easily confused.As we can see, the numbers are still more accurate than not, but only slightly. Now we'll see the plot that should help us visualize.
+
+d) Plot the probabilities across a grid and the decision boundary for your model.
+
+```{r}
+plot_boundary3 <- function(fit, test.tbl, delta){
+  grid.tbl <- expand_grid(x_1=seq(0,2, by=delta), 
+                          x_2=seq(8,20, by=delta)) 
+
+  augment(fit, grid.tbl)%>%
+    ggplot() +
+      geom_raster(aes(x_1, x_2, fill = .pred_class)) +
+      geom_point(data=test.tbl, aes(x=x_1, y=x_2, color=y, shape=y))+
+      scale_color_manual(values=c("red","green","blue"))
+}
+plot_boundary3(knn.model_345, test.mnist_345, 0.01)
+```
+
